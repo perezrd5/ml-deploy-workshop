@@ -1,0 +1,160 @@
+name: deploy-production
+
+# Manually triggered. The production environment in GitHub requires a reviewer,
+# so the workflow pauses at terraform-apply-production until approved. The
+# approval event flows into the audit trail. change_ticket_reference is enforced
+# at workflow input and re-checked at audit emit time.
+on:
+  workflow_dispatch:
+    inputs:
+      change_ticket:
+        description: 'Change ticket reference (regex: ^[A-Z]+-\d+$, e.g. CHG-1234)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: fraud-detector
+  MODEL_ARTIFACT_S3: s3://nfcu-s1-models-${{ github.repository_owner }}/fraud-detector/model.tar.gz
+  MODEL_SIGNATURE_S3: s3://nfcu-s1-models-${{ github.repository_owner }}/fraud-detector/sig
+  AUDIT_BUCKET: nfcu-s1-models-${{ github.repository_owner }}
+
+jobs:
+
+  validate-input:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Validate change ticket format
+        run: |
+          if ! [[ "${{ github.event.inputs.change_ticket }}" =~ ^[A-Z]+-[0-9]+$ ]]; then
+            echo "::error::change_ticket must match ^[A-Z]+-\d+$ (e.g. CHG-1234)"
+            exit 1
+          fi
+          echo "Change ticket: ${{ github.event.inputs.change_ticket }}"
+
+  # Same validate-artifact stage as dev. The point of running it again at prod
+  # promotion time is to catch any artifact tampering between dev deploy and
+  # prod promotion. Belt-and-braces.
+  validate-artifact:
+    needs: validate-input
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885  # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-deploy-prod
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install cosign
+        run: |
+          curl -fsSLo cosign https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64
+          chmod +x cosign && sudo mv cosign /usr/local/bin/
+
+      - name: Pull model artifact + signature
+        run: |
+          aws s3 cp "${MODEL_ARTIFACT_S3}" /tmp/model.tar.gz
+          aws s3 cp "${MODEL_SIGNATURE_S3}" /tmp/model.sig
+
+      - name: Validate artifact
+        env:
+          TFVARS_FILE: terraform/environments/production/terraform.tfvars
+        run: python3 pipeline/validate.py /tmp/model.tar.gz
+
+      - name: Cosign verify-blob (model artifact)
+        run: |
+          cosign verify-blob \
+            --key "awskms:///alias/nfcu-model-signing" \
+            --signature /tmp/model.sig \
+            --insecure-ignore-tlog \
+            /tmp/model.tar.gz
+
+  # Resolve the latest dev-promoted image digest. In a richer flow this would be
+  # the digest written by the dev workflow into a promotion artifact. For the
+  # workshop we re-resolve from ECR by walking back from latest immutable tag.
+  resolve-image:
+    needs: validate-artifact
+    runs-on: ubuntu-22.04
+    outputs:
+      image_uri: ${{ steps.resolve.outputs.image_uri }}
+      image_digest: ${{ steps.resolve.outputs.image_digest }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885  # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-deploy-prod
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve most-recent ECR image
+        id: resolve
+        run: |
+          ACCOUNT="${{ vars.AWS_ACCOUNT }}"
+          REGISTRY="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --query 'reverse(sort_by(imageDetails,& imagePushedAt))[0].imageDigest' \
+            --output text)
+          TAG=$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageDigest="${DIGEST}" \
+            --query 'imageDetails[0].imageTags[0]' --output text)
+          IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${TAG}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+  # The actual prod apply. GitHub environment 'production' has a required
+  # reviewer; the job pauses here until approval.
+  terraform-apply-production:
+    needs: resolve-image
+    runs-on: ubuntu-22.04
+    environment: production   # <-- the approval gate
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885  # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-deploy-prod
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.2
+
+      - name: terraform init + apply (production)
+        env:
+          TF_VAR_image_uri: ${{ needs.resolve-image.outputs.image_uri }}
+          TF_VAR_image_digest: ${{ needs.resolve-image.outputs.image_digest }}
+        run: |
+          terraform -chdir=terraform/environments/production init -input=false
+          terraform -chdir=terraform/environments/production apply -input=false -auto-approve
+
+      - name: Capture endpoint ARN
+        id: endpoint
+        run: |
+          ARN=$(terraform -chdir=terraform/environments/production output -raw endpoint_arn)
+          echo "arn=${ARN}" >> "$GITHUB_OUTPUT"
+
+      - name: Install boto3 for audit emitter
+        run: pip install --quiet boto3
+
+      - name: Emit audit event (prod, with approver identity)
+        env:
+          ENDPOINT_ARN: ${{ steps.endpoint.outputs.arn }}
+          IMAGE_DIGEST: ${{ needs.resolve-image.outputs.image_digest }}
+          ARTIFACT_S3_URI: ${{ env.MODEL_ARTIFACT_S3 }}
+          CHANGE_TICKET_REFERENCE: ${{ github.event.inputs.change_ticket }}
+          # GitHub does not expose the approver's email directly in workflow env.
+          # We capture the trigger actor; for stricter audit, query the
+          # /repos/.../actions/runs/{id}/approvals API in a follow-up step.
+          APPROVER_EMAIL: ${{ github.actor }}@users.noreply.github.com
+        run: |
+          python3 pipeline/audit-trail.py \
+            --env prod \
+            --metadata models/fraud-detector/metadata.json \
+            --ddb-table model-deployment-audit \
+            --s3-bucket "${AUDIT_BUCKET}"

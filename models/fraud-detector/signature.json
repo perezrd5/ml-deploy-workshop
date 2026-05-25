@@ -1,0 +1,23 @@
+{
+  "input": {
+    "type": "object",
+    "properties": {
+      "age": {"type": "integer"},
+      "workclass": {"type": "string"},
+      "education": {"type": "string"},
+      "marital_status": {"type": "string"},
+      "occupation": {"type": "string"},
+      "race": {"type": "string"},
+      "sex": {"type": "string"},
+      "hours_per_week": {"type": "integer"}
+    },
+    "required": ["age", "hours_per_week"]
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "income_over_50k": {"type": "boolean"},
+      "probability": {"type": "number"}
+    }
+  }
+}

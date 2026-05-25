@@ -1,0 +1,191 @@
+name: deploy-dev
+
+# Triggers on any change to the model artifact or dev environment Terraform.
+# Stages: validate-artifact -> containerize -> terraform-apply-dev.
+# Each stage fails closed; the pipeline never silently passes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "models/**"
+      - "terraform/environments/dev/**"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # OIDC token for AWS role assumption
+  contents: read
+  packages: write   # ECR via OIDC
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: fraud-detector
+  MODEL_ARTIFACT_S3: s3://nfcu-s1-models-${{ github.repository_owner }}/fraud-detector/model.tar.gz
+  MODEL_SIGNATURE_S3: s3://nfcu-s1-models-${{ github.repository_owner }}/fraud-detector/sig
+  AUDIT_BUCKET: nfcu-s1-models-${{ github.repository_owner }}
+  COSIGN_EXPERIMENTAL: "0"
+
+jobs:
+
+  # Stage 1+2: artifact retrieval + validation. Reads the signed model from S3,
+  # verifies the cosign signature, and runs validate.py for schema/reference/policy.
+  validate-artifact:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885  # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-deploy-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install cosign
+        run: |
+          curl -fsSLo cosign https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64
+          chmod +x cosign && sudo mv cosign /usr/local/bin/
+
+      - name: Pull model artifact + signature from S3
+        run: |
+          aws s3 cp "${MODEL_ARTIFACT_S3}" /tmp/model.tar.gz
+          aws s3 cp "${MODEL_SIGNATURE_S3}" /tmp/model.sig
+
+      - name: Validate artifact (schema + mutable-reference + policy)
+        env:
+          TFVARS_FILE: terraform/environments/dev/terraform.tfvars
+        run: python3 pipeline/validate.py /tmp/model.tar.gz
+
+      - name: Cosign verify-blob against KMS key
+        run: |
+          cosign verify-blob \
+            --key "awskms:///alias/nfcu-model-signing" \
+            --signature /tmp/model.sig \
+            --insecure-ignore-tlog \
+            /tmp/model.tar.gz
+
+  # Stage 3: containerize. Build the inference image, Trivy scan, push to ECR,
+  # cosign-sign the image with the image-signing KMS key.
+  containerize:
+    needs: validate-artifact
+    runs-on: ubuntu-22.04
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+      image_digest: ${{ steps.push.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885  # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-deploy-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419  # v2.1.5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Pull model artifact for container build
+        run: |
+          aws s3 cp "${MODEL_ARTIFACT_S3}" models/fraud-detector/model.tar.gz
+          cd models/fraud-detector && tar -xzf model.tar.gz && rm model.tar.gz
+
+      - name: Build container image
+        run: |
+          docker build -t fraud-detector:${{ github.sha }} models/fraud-detector
+
+      # SHA-pinned post the March 2026 Trivy supply-chain compromise. Bundled
+      # Trivy is v0.70.0+ (the safe baseline after the v0.69.4-v0.69.6 incident).
+      - name: Trivy scan (fail on CRITICAL or HIGH)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: fraud-detector:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Tag and push to ECR
+        id: push
+        run: |
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${{ github.sha }}"
+          docker tag fraud-detector:${{ github.sha }} "${IMAGE_URI}"
+          docker push "${IMAGE_URI}"
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag=${{ github.sha }} \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Pushed ${IMAGE_URI} digest=${DIGEST}"
+
+      - name: Install cosign
+        run: |
+          curl -fsSLo cosign https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64
+          chmod +x cosign && sudo mv cosign /usr/local/bin/
+
+      - name: Cosign sign image (KMS-backed)
+        env:
+          IMAGE_URI: ${{ steps.push.outputs.image_uri }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.image_digest }}
+        run: |
+          # Strip the tag and reference by digest — that's the immutable handle.
+          REGISTRY_REPO="${IMAGE_URI%:*}"
+          cosign sign \
+            --key "awskms:///alias/nfcu-image-signing" \
+            --tlog-upload=false \
+            --use-signing-config=false \
+            --yes \
+            "${REGISTRY_REPO}@${IMAGE_DIGEST}"
+
+  # Stage 4: terraform apply against the dev environment composition.
+  # Emits the audit event as the final step.
+  terraform-apply-dev:
+    needs: containerize
+    runs-on: ubuntu-22.04
+    environment: dev
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885  # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-deploy-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.2
+
+      - name: terraform init + apply (dev)
+        env:
+          TF_VAR_image_uri: ${{ needs.containerize.outputs.image_uri }}
+          TF_VAR_image_digest: ${{ needs.containerize.outputs.image_digest }}
+        run: |
+          terraform -chdir=terraform/environments/dev init -input=false
+          terraform -chdir=terraform/environments/dev apply -input=false -auto-approve
+
+      - name: Capture endpoint ARN
+        id: endpoint
+        run: |
+          ARN=$(terraform -chdir=terraform/environments/dev output -raw endpoint_arn)
+          echo "arn=${ARN}" >> "$GITHUB_OUTPUT"
+
+      - name: Install boto3 for audit emitter
+        run: pip install --quiet boto3
+
+      - name: Emit audit event
+        env:
+          ENDPOINT_ARN: ${{ steps.endpoint.outputs.arn }}
+          IMAGE_DIGEST: ${{ needs.containerize.outputs.image_digest }}
+          ARTIFACT_S3_URI: ${{ env.MODEL_ARTIFACT_S3 }}
+          CHANGE_TICKET_REFERENCE: AUTO-DEV-${{ github.run_id }}
+        run: |
+          python3 pipeline/audit-trail.py \
+            --env dev \
+            --metadata models/fraud-detector/metadata.json \
+            --ddb-table model-deployment-audit \
+            --s3-bucket "${AUDIT_BUCKET}"

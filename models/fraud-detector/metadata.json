@@ -1,0 +1,16 @@
+{
+  "model_name": "fraud-detector",
+  "model_version": "1.0.0",
+  "training_run_id": "lab-train-2026-05-15-abc123",
+  "training_dataset": "uci-adult-2024-snapshot",
+  "training_dataset_sha256": "REPLACE_AT_BUILD_TIME",
+  "hyperparameters": {
+    "max_depth": 6,
+    "n_estimators": 100,
+    "learning_rate": 0.1
+  },
+  "evaluation": {
+    "accuracy": 0.86,
+    "f1_score": 0.71
+  }
+}
