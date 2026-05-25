@@ -136,7 +136,10 @@ jobs:
       - name: Tag and push to ECR
         id: push
         run: |
-          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          # amazon-ecr-login@v2 doesn't expose the `registry` output when
+          # `registries:` is set (multi-registry mode). Compute the URL
+          # ourselves from the AWS_ACCOUNT repo variable + region.
+          REGISTRY="${{ vars.AWS_ACCOUNT }}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${{ github.sha }}"
           docker tag fraud-detector:${{ github.sha }} "${IMAGE_URI}"
           docker push "${IMAGE_URI}"
