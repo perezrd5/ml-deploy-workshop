@@ -94,7 +94,7 @@ resource "aws_iam_role_policy" "execution" {
 # --- Security group for the endpoint ENIs -----------------------------------
 resource "aws_security_group" "endpoint" {
   name        = "nfcu-s1-sagemaker-${var.environment}"
-  description = "SageMaker endpoint ENIs — egress only, no ingress"
+  description = "SageMaker endpoint ENIs - egress only, no ingress (ASCII only per AWS EC2 requirement)"
   vpc_id      = var.vpc_id
 
   # Egress to ECR (via VPC endpoint) and S3 (via gateway endpoint).
