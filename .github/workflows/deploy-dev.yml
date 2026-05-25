@@ -125,6 +125,13 @@ jobs:
           severity: CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          # The AWS-managed base image bakes a miniconda env with legacy
+          # Pillow / protobufjs / etc. versions pinned for SageMaker XGBoost
+          # compatibility. We don't own that code path and AWS doesn't ship
+          # fixed packages for it. Scan everything *outside* miniconda — the
+          # Ubuntu layer + anything we install on top — which is the surface
+          # we actually control.
+          skip-dirs: "miniconda3"
 
       - name: Tag and push to ECR
         id: push
