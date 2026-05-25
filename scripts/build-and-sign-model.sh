@@ -53,28 +53,24 @@ tar -czf "${TARBALL}" -C "${MODEL_DIR}" \
   model.pkl inference.py signature.json metadata.json model_card.md
 
 echo "==> Cosign sign-blob (KMS-backed model-signing key)"
-SIGNATURE="${WORKDIR}/model.sig"
+SIGNATURE="${WORKDIR}/model.bundle"
+
+# Cosign 3.x requires a signing-config to opt out of the transparency log.
+# Create one with rekor stripped before signing.
+curl -fsSL https://raw.githubusercontent.com/sigstore/root-signing/refs/heads/main/targets/signing_config.v0.2.json \
+  | jq 'del(.rekorTlogUrls)' > /tmp/signing-config.json
+
+# KMS_ALIAS keeps its `alias/` prefix in the cosign URL (awskms:///alias/<name>).
 cosign sign-blob \
-  --key "awskms:///${KMS_ALIAS#alias/}" \
+  --key "awskms:///${KMS_ALIAS}" \
   --signing-config /tmp/signing-config.json \
-  --bundle "${SIGNATURE}.bundle" \
-  --output-signature "${SIGNATURE}" \
+  --bundle "${SIGNATURE}" \
   --yes \
-  "${TARBALL}" || {
-    # Fallback: cosign 3.x signing-config dance.
-    curl -fsSL https://raw.githubusercontent.com/sigstore/root-signing/refs/heads/main/targets/signing_config.v0.2.json \
-      | jq 'del(.rekorTlogUrls)' > /tmp/signing-config.json
-    cosign sign-blob \
-      --key "awskms:///${KMS_ALIAS#alias/}" \
-      --signing-config /tmp/signing-config.json \
-      --bundle "${SIGNATURE}.bundle" \
-      --yes \
-      "${TARBALL}"
-}
+  "${TARBALL}"
 
 echo "==> Upload to s3://${S3_BUCKET}/${S3_KEY_PREFIX}/"
-aws s3 cp "${TARBALL}"            "s3://${S3_BUCKET}/${S3_KEY_PREFIX}/model.tar.gz"
-aws s3 cp "${SIGNATURE}.bundle"   "s3://${S3_BUCKET}/${S3_KEY_PREFIX}/sig"
+aws s3 cp "${TARBALL}"   "s3://${S3_BUCKET}/${S3_KEY_PREFIX}/model.tar.gz"
+aws s3 cp "${SIGNATURE}" "s3://${S3_BUCKET}/${S3_KEY_PREFIX}/sig"
 
 cat <<EOF
 
