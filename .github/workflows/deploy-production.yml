@@ -129,11 +129,15 @@ jobs:
 
       - name: terraform init + apply (production)
         env:
-          TF_VAR_image_uri: ${{ needs.resolve-image.outputs.image_uri }}
-          TF_VAR_image_digest: ${{ needs.resolve-image.outputs.image_digest }}
+          IMAGE_URI: ${{ needs.resolve-image.outputs.image_uri }}
+          IMAGE_DIGEST: ${{ needs.resolve-image.outputs.image_digest }}
         run: |
           terraform -chdir=terraform/environments/production init -input=false
-          terraform -chdir=terraform/environments/production apply -input=false -auto-approve
+          # tfvars REPLACE_ME placeholders are overridden by -var here.
+          # TF_VAR_* env vars don't override tfvars; -var does.
+          terraform -chdir=terraform/environments/production apply -input=false -auto-approve \
+            -var "image_uri=${IMAGE_URI}" \
+            -var "image_digest=${IMAGE_DIGEST}"
 
       - name: Capture endpoint ARN
         id: endpoint

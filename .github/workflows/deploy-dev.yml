@@ -192,11 +192,18 @@ jobs:
 
       - name: terraform init + apply (dev)
         env:
-          TF_VAR_image_uri: ${{ needs.containerize.outputs.image_uri }}
-          TF_VAR_image_digest: ${{ needs.containerize.outputs.image_digest }}
+          IMAGE_URI: ${{ needs.containerize.outputs.image_uri }}
+          IMAGE_DIGEST: ${{ needs.containerize.outputs.image_digest }}
         run: |
           terraform -chdir=terraform/environments/dev init -input=false
-          terraform -chdir=terraform/environments/dev apply -input=false -auto-approve
+          # `-var` is the only assignment mechanism that overrides
+          # terraform.tfvars; TF_VAR_* env vars are LOWER precedence than the
+          # tfvars file. The tfvars file ships with REPLACE_ME placeholders
+          # for these two values; the containerize job's real values come in
+          # here via the -var flags.
+          terraform -chdir=terraform/environments/dev apply -input=false -auto-approve \
+            -var "image_uri=${IMAGE_URI}" \
+            -var "image_digest=${IMAGE_DIGEST}"
 
       - name: Capture endpoint ARN
         id: endpoint
