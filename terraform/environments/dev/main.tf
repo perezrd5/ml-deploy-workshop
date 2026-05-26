@@ -46,8 +46,8 @@ module "sagemaker_endpoint" {
   kms_key_arn           = var.kms_key_arn
 
   # ml.t3.medium isn't in the hashicorp/aws v5 provider's validation list yet.
-  # ml.t2.medium is the cheapest type in the allowlist and fine for the lab.
-  instance_type  = "ml.t2.medium"
+  # ml.m5.large is the cheapest type in the allowlist and fine for the lab.
+  instance_type  = "ml.m5.large"
   instance_count = 1
 }
 

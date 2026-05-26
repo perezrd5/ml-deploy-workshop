@@ -42,10 +42,10 @@ module "sagemaker_endpoint" {
   private_subnet_ids    = var.private_subnet_ids
   kms_key_arn           = var.kms_key_arn
 
-  # Production: ml.t2.medium for workshop parity with dev. Real prod would use
+  # Production: ml.m5.large for workshop parity with dev. Real prod would use
   # ml.m5.xlarge or larger; bumped only after provider validation lands.
   # Two-instance baseline so rolling update has somewhere to drain to.
-  instance_type  = "ml.t2.medium"
+  instance_type  = "ml.m5.large"
   instance_count = 2
 }
 
