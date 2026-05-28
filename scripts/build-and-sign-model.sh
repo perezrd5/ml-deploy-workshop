@@ -39,8 +39,15 @@ echo "    Mismatch here yields ModuleNotFoundError: numpy._core.multiarray at /p
 # Debian 12+ / Ubuntu 24.04 lab images.
 pip install --quiet --break-system-packages "numpy<2" "scikit-learn==1.5.2" "pandas" "xgboost==1.7.4"
 
-echo "==> Train model -> model.pkl"
-python3 "${MODEL_DIR}/train.py" --output "${MODEL_DIR}/model.pkl"
+echo "==> Train model -> model.pkl (inside the inference container's base image, eliminates train/serve env drift)"
+CONTAINER_BASE="683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-xgboost:1.7-1"
+aws ecr get-login-password --region "${AWS_REGION:-us-east-1}" \
+  | docker login --username AWS --password-stdin 683313688378.dkr.ecr.us-east-1.amazonaws.com >/dev/null
+
+docker run --rm \
+  -v "${MODEL_DIR}:/work" -w /work \
+  "${CONTAINER_BASE}" \
+  bash -c "pip install --no-cache-dir --quiet 'scikit-learn==1.5.2' && python3 train.py --output /work/model.pkl"
 
 echo "==> Compute training_dataset_sha256 and patch metadata.json"
 DATASET_SHA=$(curl -fsSL "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data" \
