@@ -37,7 +37,7 @@ echo "==> Pin training deps to match the inference container (numpy<2, sklearn 1
 echo "    Mismatch here yields ModuleNotFoundError: numpy._core.multiarray at /ping."
 # --break-system-packages is harmless on non-PEP-668 systems and required on
 # Debian 12+ / Ubuntu 24.04 lab images.
-pip install --quiet --break-system-packages "numpy<2" "scikit-learn==1.5.2" "pandas" "xgboost==1.7.6"
+pip install --quiet --break-system-packages "numpy<2" "scikit-learn==1.5.2" "pandas" "xgboost==1.7.4"
 
 echo "==> Train model -> model.pkl"
 python3 "${MODEL_DIR}/train.py" --output "${MODEL_DIR}/model.pkl"

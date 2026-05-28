@@ -10,7 +10,7 @@ FROM 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-xgboost:1.7-1
 # sklearn 1.5.2 so the inference env matches the training env — pickles made
 # with numpy 2.x reference numpy._core.multiarray which doesn't exist in
 # numpy 1.x and the AWS XGBoost 1.7-1 base image is numpy 1.x.
-RUN pip install --no-cache-dir "numpy<2" "scikit-learn==1.5.2" pandas xgboost==1.7.6
+RUN pip install --no-cache-dir "numpy<2" "scikit-learn==1.5.2" pandas xgboost==1.7.4
 
 # SageMaker convention: model artifacts at /opt/ml/model, inference code under
 # /opt/ml/model/code/. SAGEMAKER_PROGRAM picks up inference.py from that path.
