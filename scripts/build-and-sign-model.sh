@@ -33,7 +33,7 @@ MODEL_DIR="${REPO_ROOT}/models/fraud-detector"
 cleanup() { rm -rf "${WORKDIR}"; }
 trap cleanup EXIT
 
-echo "==> Pin training deps to match the inference container (numpy<2, sklearn 1.5.2)"
+echo "==> Pin training deps to match the inference container (numpy<2, sklearn 1.3.2)"
 echo "    Mismatch here yields ModuleNotFoundError: numpy._core.multiarray at /ping."
 # --break-system-packages is harmless on non-PEP-668 systems and required on
 # Debian 12+ / Ubuntu 24.04 lab images.

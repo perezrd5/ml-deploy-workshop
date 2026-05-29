@@ -61,10 +61,9 @@ def predict_fn(input_data: pd.DataFrame, model: Any) -> list:
     ]
 
 
-def output_fn(prediction: list, response_content_type: str) -> str:
+def output_fn(prediction: list, response_content_type: str) -> tuple:
     if response_content_type != CONTENT_TYPE_JSON:
         raise ValueError(f"Unsupported response content type: {response_content_type}")
     # Single-prediction calls get the object directly; batch returns a list.
-    if len(prediction) == 1:
-        return json.dumps(prediction[0])
-    return json.dumps(prediction)
+    body = json.dumps(prediction[0] if len(prediction) == 1 else prediction)
+    return body, response_content_type
