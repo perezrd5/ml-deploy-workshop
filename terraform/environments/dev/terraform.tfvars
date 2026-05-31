@@ -18,3 +18,4 @@ model_artifact_bucket = "REPLACE_BUCKET"
 vpc_id                = "REPLACE_FROM_BOOTSTRAP_OUTPUT"
 private_subnet_ids    = ["REPLACE_FROM_BOOTSTRAP_OUTPUT_0", "REPLACE_FROM_BOOTSTRAP_OUTPUT_1"]
 kms_key_arn           = "REPLACE_FROM_BOOTSTRAP_OUTPUT"
+# trigger: task 1 - pass
